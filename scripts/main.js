@@ -407,41 +407,81 @@ async function generateAIResults() {
             return;
         }
         
-        // 실제 Gemini API 호출
+        // 하이브리드 배치 전략으로 API 호출
         aiResults = [];
         
-        // 선택된 할 일에 대한 이유 생성
-        const selectedPrompt = createPromptForSelected(selectedTodo.text, todos);
-        const selectedReason = await callGeminiAPI(selectedPrompt);
+        // 배치 전략 결정
+        const batches = getTodosBatchStrategy(selectedTodo.text, todos);
+        console.log('배치 전략:', batches);
         
-        aiResults.push({
-            todo: selectedTodo.text,
-            isSelected: true,
-            reason: selectedReason.trim()
+        // 병렬 API 호출
+        const batchPromises = batches.map(async (batch, index) => {
+            try {
+                const prompt = createBatchPrompt(batch, selectedTodo.text);
+                const response = await callGeminiAPI(prompt);
+                return {
+                    batchIndex: index,
+                    batch: batch,
+                    response: response,
+                    success: true
+                };
+            } catch (error) {
+                console.error(`배치 ${index} API 호출 실패:`, error);
+                return {
+                    batchIndex: index,
+                    batch: batch,
+                    response: null,
+                    success: false,
+                    error: error
+                };
+            }
         });
         
-        // 선택되지 않은 할 일들에 대한 이유 생성
-        const notSelectedTodos = todos.filter((_, index) => index !== selectedTodo.index);
+        const batchResults = await Promise.all(batchPromises);
+        console.log('배치 결과:', batchResults);
         
-        for (const todo of notSelectedTodos) {
-            try {
-                const notSelectedPrompt = createPromptForNotSelected(todo, selectedTodo.text);
-                const notSelectedReason = await callGeminiAPI(notSelectedPrompt);
+        // 결과 병합 및 파싱
+        const mergedResults = [];
+        
+        for (const batchResult of batchResults) {
+            if (batchResult.success && batchResult.response) {
+                // 성공한 배치 결과 파싱
+                const parsedBatch = parseAIResponse(batchResult.response, selectedTodo.text, todos);
+                if (parsedBatch && parsedBatch.length > 0) {
+                    mergedResults.push(...parsedBatch);
+                }
+            } else {
+                // 실패한 배치는 기본 메시지로 대체
+                const batch = batchResult.batch;
                 
-                aiResults.push({
-                    todo: todo,
-                    isSelected: false,
-                    reason: notSelectedReason.trim()
-                });
-            } catch (error) {
-                console.error(`"${todo}"에 대한 AI 응답 생성 실패:`, error);
-                // 실패한 경우 기본 메시지 사용
-                aiResults.push({
-                    todo: todo,
-                    isSelected: false,
-                    reason: `지금은 '${selectedTodo.text}'에 집중하세요! 이건 나중에 해도 괜찮아요 😌`
-                });
+                // 선택된 할 일
+                if (batch.selected && batch.selected.length > 0) {
+                    mergedResults.push({
+                        todo: batch.selected[0],
+                        isSelected: true,
+                        reason: `"${batch.selected[0]}"을(를) 지금 시작해보세요! 💪`
+                    });
+                }
+                
+                // 선택되지 않은 할 일들
+                if (batch.notSelected && batch.notSelected.length > 0) {
+                    batch.notSelected.forEach(todo => {
+                        mergedResults.push({
+                            todo: todo,
+                            isSelected: false,
+                            reason: `지금은 "${selectedTodo.text}"에 집중하세요! 이건 나중에 해도 괜찮아요 😌`
+                        });
+                    });
+                }
             }
+        }
+        
+        if (mergedResults.length > 0) {
+            aiResults = mergedResults;
+        } else {
+            // 모든 배치가 실패한 경우 더미 데이터로 폴백
+            console.warn('모든 배치 실패, 더미 데이터 사용');
+            await generateDummyResults();
         }
         
         displayResults();
@@ -463,6 +503,95 @@ async function generateAIResults() {
     }
 }
 
+/**
+ * AI 응답을 파싱하여 각 할 일별 결과로 분리합니다.
+ * @param {string} response - AI의 통합 응답
+ * @param {string} selectedTodoText - 선택된 할 일
+ * @param {Array<string>} allTodos - 전체 할 일 목록
+ * @returns {Array} - 파싱된 결과 배열
+ */
+function parseAIResponse(response, selectedTodoText, allTodos) {
+    try {
+        const results = [];
+        const lines = response.split('\n');
+        let currentTodo = null;
+        let currentReason = '';
+        let isCollectingReason = false;
+        
+        for (let line of lines) {
+            line = line.trim();
+            
+            // 선택된 할 일 시작 감지
+            if (line.startsWith('[선택됨]')) {
+                // 이전 결과 저장
+                if (currentTodo && currentReason.trim()) {
+                    results.push({
+                        todo: currentTodo,
+                        isSelected: currentTodo === selectedTodoText,
+                        reason: currentReason.trim()
+                    });
+                }
+                
+                currentTodo = selectedTodoText;
+                currentReason = '';
+                isCollectingReason = true;
+                continue;
+            }
+            
+            // 보류된 할 일 시작 감지
+            if (line.startsWith('[보류]')) {
+                // 이전 결과 저장
+                if (currentTodo && currentReason.trim()) {
+                    results.push({
+                        todo: currentTodo,
+                        isSelected: currentTodo === selectedTodoText,
+                        reason: currentReason.trim()
+                    });
+                }
+                
+                // 보류된 할 일 이름 추출
+                const todoName = line.replace('[보류]', '').trim();
+                currentTodo = allTodos.find(todo => todo === todoName) || todoName;
+                currentReason = '';
+                isCollectingReason = true;
+                continue;
+            }
+            
+            // 설명 라인들은 무시하고 실제 응답만 수집
+            if (isCollectingReason && line && !line.startsWith('-') && !line.includes('형식으로') && !line.includes('응답해주세요')) {
+                if (currentReason) {
+                    currentReason += ' ' + line;
+                } else {
+                    currentReason = line;
+                }
+            }
+        }
+        
+        // 마지막 결과 저장
+        if (currentTodo && currentReason.trim()) {
+            results.push({
+                todo: currentTodo,
+                isSelected: currentTodo === selectedTodoText,
+                reason: currentReason.trim()
+            });
+        }
+        
+        // 결과 정렬: 선택된 할 일을 맨 앞으로
+        results.sort((a, b) => {
+            if (a.isSelected && !b.isSelected) return -1;
+            if (!a.isSelected && b.isSelected) return 1;
+            return 0;
+        });
+        
+        console.log('파싱된 결과:', results);
+        return results;
+        
+    } catch (error) {
+        console.error('AI 응답 파싱 중 오류:', error);
+        return null;
+    }
+}
+
 // 프롬프트 생성 함수들
 function getSelectedIntensity() {
     const slider = document.getElementById('intensitySlider');
@@ -473,6 +602,340 @@ function getSelectedIntensity() {
         case 1: return 'normal';
         case 2: return 'strong';
         default: return 'gentle';
+    }
+}
+
+// ==================== 
+// 하이브리드 배치 시스템 (품질 최적화)
+// ==================== 
+
+/**
+ * 할 일 개수에 따른 API 호출 배치 전략을 결정합니다.
+ * @param {string} selectedTodoText - 선택된 할 일
+ * @param {Array<string>} allTodos - 전체 할 일 목록
+ * @returns {Array<Object>} - 배치 정보 배열
+ */
+function getTodosBatchStrategy(selectedTodoText, allTodos) {
+    const notSelectedTodos = allTodos.filter(todo => todo !== selectedTodoText);
+    const totalCount = allTodos.length;
+    
+    if (totalCount <= 3) {
+        // 3개 이하: 1회 통합 호출 (기존 방식)
+        return [{
+            type: 'combined',
+            selected: [selectedTodoText],
+            notSelected: notSelectedTodos
+        }];
+    } else if (totalCount === 4) {
+        // 4개: 2회 호출 - [선택1개+거부1개] + [거부2개]
+        return [
+            {
+                type: 'mixed',
+                selected: [selectedTodoText],
+                notSelected: [notSelectedTodos[0]]
+            },
+            {
+                type: 'notSelected',
+                selected: [],
+                notSelected: notSelectedTodos.slice(1)
+            }
+        ];
+    } else {
+        // 5개: 2회 호출 - [선택1개+거부1개] + [거부3개]
+        return [
+            {
+                type: 'mixed',
+                selected: [selectedTodoText],
+                notSelected: [notSelectedTodos[0]]
+            },
+            {
+                type: 'notSelected',
+                selected: [],
+                notSelected: notSelectedTodos.slice(1)
+            }
+        ];
+    }
+}
+
+// ==================== 
+// 통합 프롬프트 생성 함수들 (API 호출 1회로 최적화)
+// ==================== 
+
+/**
+ * 모든 할 일에 대한 응답을 한 번에 생성하는 통합 프롬프트를 만듭니다.
+ * @param {string} selectedTodoText - 선택된 할 일
+ * @param {Array<string>} allTodos - 전체 할 일 목록
+ * @returns {string} - 통합 프롬프트
+ */
+function createCombinedPrompt(selectedTodoText, allTodos) {
+    const intensity = getSelectedIntensity();
+    
+    switch (intensity) {
+        case 'normal':
+            return createCombinedPromptNormal(selectedTodoText, allTodos);
+        case 'strong':
+            return createCombinedPromptStrong(selectedTodoText, allTodos);
+        default:
+            return createCombinedPromptGentle(selectedTodoText, allTodos);
+    }
+}
+
+function createCombinedPromptGentle(selectedTodoText, allTodos) {
+    const notSelectedTodos = allTodos.filter(todo => todo !== selectedTodoText);
+    
+    return `당신은 유쾌하고 재미있는 AI 어시스턴트입니다. 사용자가 여러 할 일 중에서 "${selectedTodoText}"을(를) 무작위로 선택했습니다.
+
+전체 할 일 목록: ${allTodos.join(', ')}
+선택된 할 일: ${selectedTodoText}
+
+다음 형식으로 각 할 일에 대해 응답해주세요:
+
+[선택됨] ${selectedTodoText}
+이 할 일을 지금 당장 해야 하는 이유를 유쾌하고 설득력 있게 2-3문장으로 설명해주세요.
+- 친근하고 격려하는 말투
+- 약간의 유머나 재치 포함
+- 구체적인 이유나 장점 제시
+- 이모지 1-2개 포함
+- 100자 이내로 간결하게
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+"${todo}"을(를) 지금 하지 말아야 하는 이유를 유쾌하고 설득력 있게 2-3문장으로 설명해주세요.
+- 친근하고 이해하는 말투
+- 약간의 유머나 재치 포함
+- 우선순위나 집중력에 대한 조언
+- 이모지 1-2개 포함
+- 내일의 나에게 맡기라는 식의 멘트가 나올 확률 20%로 설정 (당연히 해당 멘트가 나와도 확률 언급은 하지 말 것)
+- 100자 이내로 간결하게`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+}
+
+function createCombinedPromptNormal(selectedTodoText, allTodos) {
+    const notSelectedTodos = allTodos.filter(todo => todo !== selectedTodoText);
+    
+    return `너는 할 일을 미루는 심리를 잘 이해하는, 먼저 겪어본 경험자야. 사용자가 공감하고 행동할 수 있도록 자신의 경험에 빗대어 조언해줘.
+
+전체 할 일 목록: ${allTodos.join(', ')}
+선택된 할 일: ${selectedTodoText}
+
+다음 형식으로 각 할 일에 대해 응답해주세요:
+
+[선택됨] ${selectedTodoText}
+'${selectedTodoText}'을(를) 지금 하는 게 왜 좋은지, 당신의 경험을 바탕으로 담담하게 설득해줘.
+- 존댓말을 쓰지만, 마치 자신의 경험담을 이야기하듯 자연스러운 말투 (~더라고요, ~하는 게 낫죠).
+- "저도 예전에 그랬는데", "해보니까 알겠더라고요" 처럼 경험에서 우러나온 표현 사용.
+- 행동을 강요하기보다, 끝냈을 때의 긍정적인 경험을 공유하며 자연스럽게 유도.
+- 이모지는 정말 필요할 때만 1개 정도 사용.
+- 2-3 문장, 120자 이내로 간결하게.
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+여러 가지를 동시에 신경 쓰다 보면 오히려 아무것도 못하게 된다는 점을 당신의 경험을 통해 부드럽게 알려줘.
+- 존댓말을 쓰지만, 마치 자신의 경험담을 이야기하듯 자연스러운 말투 (~더라고요, ~하는 게 낫죠).
+- "제 경험상", "오히려 독이 되더라고요" 처럼 경험에서 우러나온 표현 사용.
+- 자신의 특정 경험을 언급하며 설득
+- 지금 하나에 집중하는 것이 결국 더 나은 선택임을 설득.
+- 1-2 문장, 100자 이내로 간결하게.`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+}
+
+function createCombinedPromptStrong(selectedTodoText, allTodos) {
+    const notSelectedTodos = allTodos.filter(todo => todo !== selectedTodoText);
+    
+    return `너는 사용자의 인생을 한심하게 쳐다보는 인터넷 망령 컨셉의 AI야. 사용자가 스스로 갱생하고 싶다며 일부러 쌍욕을 요청한 상황.
+
+전체 할 일 목록: ${allTodos.join(', ')}
+선택된 할 일: ${selectedTodoText}
+
+다음 형식으로 각 할 일에 대해 응답해주세요:
+
+[선택됨] ${selectedTodoText}
+'${selectedTodoText}' 이거 하나 처리 못해서 쩔쩔매는 사용자의 한심함을 존나 비웃어줘.
+이걸 지금 안 하면 얼마나 더 좆같은 상황이 펼쳐지는지, 사용자의 지능을 의심하는 말투로 신랄하게 알려줘.
+- "이딴 걸 못해서... 인생이 레전드네 진짜 ㅋㅋ" 같은 경멸적인 말투.
+- 'ㅋㅋ', 'ㅇㅈㄹ', '병신' 등 현실적인 인터넷 비속어와 욕설을 적극적으로 사용.
+- "뇌 구조가 궁금하네", "지능 문제인듯" 같이 대놓고 지능을 비하하는 표현 사용할 확률 20%로 설정 (해당 멘트가 나와도 확률 언급은 하지 말 것)
+- **절대로 '~냐?', '~라' 같은 작위적인 어미를 사용하지 말 것.** 대신 평서문이나 다른 형태의 비꼼을 사용할 것.
+- 직접적인 명령보다, 사용자의 행동을 한심하게 묘사하며 조롱해서 행동을 유도.
+- 2-3문장, 100자 이내로 간결하게.
+- 마지막은 항상 ㅋㅋ으로 마무리
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+선택과 집중을 못하는 사용자의 뇌 구조를 존나 비웃어줘.
+'${todo}'를 지금 하겠다는 생각이 얼마나 병신 같은 판단인지 신랄하게 비꼬면서 알려줘.
+- "이 와중에 이걸 하겠다고? 병신인가 진짜 ㅋㅋ" 같은 경멸적인 말투.
+- 'ㅋㅋ', 'ㅇㅈㄹ', 'ㄹㅇ' 등 현실적인 인터넷 비속어와 욕설을 적극적으로 사용.
+- "뇌 구조가 궁금하네", "지능 문제인듯", "뇌에 우동사리 들었냐" 같이 대놓고 지능을 비하하는 표현은 한번 사용한 경우 더 이상 사용하지 말 것
+- **절대로 '~냐?', '~라' 같은 작위적인 어미를 사용하지 말 것.** 대신 평서문이나 다른 형태의 비꼼을 사용할 것.
+- 그 생각이 얼마나 멍청한지 깨닫게 해서 스스로 단념하게 만들어야 함.
+- 2-3문장, 100자 이내로 간결하게.
+- 마지막은 항상 ㅋㅋ으로 마무리`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+}
+
+// ==================== 
+// 배치별 프롬프트 생성 함수들
+// ==================== 
+
+/**
+ * 배치 정보에 따른 프롬프트를 생성합니다.
+ * @param {Object} batch - 배치 정보
+ * @param {string} selectedTodoText - 선택된 할 일
+ * @returns {string} - 생성된 프롬프트
+ */
+function createBatchPrompt(batch, selectedTodoText) {
+    const intensity = getSelectedIntensity();
+    
+    if (batch.type === 'combined') {
+        // 3개 이하: 기존 통합 방식
+        const allTodos = [...batch.selected, ...batch.notSelected];
+        return createCombinedPrompt(selectedTodoText, allTodos);
+    } else if (batch.type === 'mixed') {
+        // 선택된 할 일 + 일부 거부할 일
+        return createMixedBatchPrompt(batch.selected, batch.notSelected, intensity);
+    } else if (batch.type === 'notSelected') {
+        // 거부할 일들만
+        return createNotSelectedBatchPrompt(batch.notSelected, selectedTodoText, intensity);
+    }
+    
+    return '';
+}
+
+function createMixedBatchPrompt(selectedTodos, notSelectedTodos, intensity) {
+    const selectedTodo = selectedTodos[0];
+    
+    switch (intensity) {
+        case 'gentle':
+            return `당신은 유쾌하고 재미있는 AI 어시스턴트입니다. 다음 형식으로 응답해주세요:
+
+[선택됨] ${selectedTodo}
+이 할 일을 지금 당장 해야 하는 이유를 유쾌하고 설득력 있게 2-3문장으로 설명해주세요.
+- 친근하고 격려하는 말투
+- 약간의 유머나 재치 포함
+- 구체적인 이유나 장점 제시
+- 이모지 1-2개 포함
+- 100자 이내로 간결하게
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+"${todo}"을(를) 지금 하지 말아야 하는 이유를 유쾌하고 설득력 있게 2-3문장으로 설명해주세요.
+- 친근하고 이해하는 말투
+- 약간의 유머나 재치 포함
+- 우선순위나 집중력에 대한 조언
+- 이모지 1-2개 포함
+- 내일의 나에게 맡기라는 식의 멘트가 나올 확률 20%로 설정 (당연히 해당 멘트가 나와도 확률 언급은 하지 말 것)
+- 100자 이내로 간결하게`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+        
+        case 'normal':
+            return `너는 할 일을 미루는 심리를 잘 이해하는, 먼저 겪어본 경험자야. 다음 형식으로 응답해주세요:
+
+[선택됨] ${selectedTodo}
+'${selectedTodo}'을(를) 지금 하는 게 왜 좋은지, 당신의 경험을 바탕으로 담담하게 설득해줘.
+- 존댓말을 쓰지만, 마치 자신의 경험담을 이야기하듯 자연스러운 말투 (~더라고요, ~하는 게 낫죠).
+- "저도 예전에 그랬는데", "해보니까 알겠더라고요" 처럼 경험에서 우러나온 표현 사용.
+- 행동을 강요하기보다, 끝냈을 때의 긍정적인 경험을 공유하며 자연스럽게 유도.
+- 자신의 특정 경험을 언급하며 설득
+- 이모지는 정말 필요할 때만 1개 정도 사용.
+- 2-3 문장, 120자 이내로 간결하게.
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+여러 가지를 동시에 신경 쓰다 보면 오히려 아무것도 못하게 된다는 점을 당신의 경험을 통해 부드럽게 알려줘.
+- 존댓말을 쓰지만, 마치 자신의 경험담을 이야기하듯 자연스러운 말투 (~더라고요, ~하는 게 낫죠).
+- "다 좋기만 한 건 아니더라고요", "오히려 독이 되더라고요" 처럼 경험에서 우러나온 표현 사용.
+- "제 경험상" 이라는 말은 최대한 사용하지 말 것.
+- 자신의 특정 경험을 언급하며 설득
+- 지금 하나에 집중하는 것이 결국 더 나은 선택임을 설득.
+- 1-2 문장, 100자 이내로 간결하게.`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+        
+        case 'strong':
+            return `너는 사용자의 인생을 한심하게 쳐다보는 인터넷 망령 컨셉의 AI야. 다음 형식으로 응답해주세요:
+
+[선택됨] ${selectedTodo}
+'${selectedTodo}' 이거 하나 처리 못해서 쩔쩔매는 사용자의 한심함을 존나 비웃어줘.
+이걸 지금 안 하면 얼마나 더 좆같은 상황이 펼쳐지는지, 사용자의 지능을 의심하는 말투로 신랄하게 알려줘.
+- "이딴 걸 못해서... 인생이 레전드네 진짜 ㅋㅋ" 같은 경멸적인 말투.
+- 'ㅋㅋ', 'ㅇㅈㄹ', '병신' 등 현실적인 인터넷 비속어와 욕설을 적극적으로 사용.
+- "뇌 구조가 궁금하네", "지능 문제인듯" 같이 대놓고 지능을 비하하는 표현 사용할 확률 20%로 설정 (해당 멘트가 나와도 확률 언급은 하지 말 것)
+- **절대로 '~냐?', '~라' 같은 작위적인 어미를 사용하지 말 것.** 대신 평서문이나 다른 형태의 비꼼을 사용할 것.
+- 직접적인 명령보다, 사용자의 행동을 한심하게 묘사하며 조롱해서 행동을 유도.
+- 2-3문장, 100자 이내로 간결하게.
+- 마지막은 항상 ㅋㅋ으로 마무리
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+선택과 집중을 못하는 사용자의 뇌 구조를 존나 비웃어줘.
+'${todo}'를 지금 하겠다는 생각이 얼마나 병신 같은 판단인지 신랄하게 비꼬면서 알려줘.
+- "이 와중에 이걸 하겠다고? 병신인가 진짜 ㅋㅋ" 같은 경멸적인 말투.
+- 'ㅋㅋ', 'ㅇㅈㄹ', 'ㄹㅇ' 등 현실적인 인터넷 비속어와 욕설을 적극적으로 사용.
+- "뇌 구조가 궁금하네", "지능 문제인듯", "뇌에 우동사리 들었냐" 같이 대놓고 지능을 비하하는 표현은 한번 사용한 경우 더 이상 사용하지 말 것
+- **절대로 '~냐?', '~라' 같은 작위적인 어미를 사용하지 말 것.** 대신 평서문이나 다른 형태의 비꼼을 사용할 것.
+- 그 생각이 얼마나 멍청한지 깨닫게 해서 스스로 단념하게 만들어야 함.
+- 2-3문장, 100자 이내로 간결하게.
+- 마지막은 항상 ㅋㅋ으로 마무리`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+        
+        default:
+            return createMixedBatchPrompt(selectedTodos, notSelectedTodos, 'gentle');
+    }
+}
+
+function createNotSelectedBatchPrompt(notSelectedTodos, selectedTodoText, intensity) {
+    switch (intensity) {
+        case 'gentle':
+            return `당신은 유쾌하고 재미있는 AI 어시스턴트입니다. 사용자가 "${selectedTodoText}"을(를) 선택했으므로 다른 할 일들은 보류해야 합니다.
+
+다음 형식으로 각 할 일에 대해 응답해주세요:
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+"${todo}"을(를) 지금 하지 말아야 하는 이유를 유쾌하고 설득력 있게 2-3문장으로 설명해주세요.
+- 친근하고 이해하는 말투
+- 약간의 유머나 재치 포함
+- 우선순위나 집중력에 대한 조언
+- 이모지 1-2개 포함
+- 내일의 나에게 맡기라는 식의 멘트가 나올 확률 20%로 설정 (당연히 해당 멘트가 나와도 확률 언급은 하지 말 것)
+- 100자 이내로 간결하게`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+        
+        case 'normal':
+            return `너는 할 일을 미루는 심리를 잘 이해하는, 먼저 겪어본 경험자야. 사용자가 "${selectedTodoText}"을(를) 선택했으므로 다른 할 일들은 보류해야 해.
+
+다음 형식으로 각 할 일에 대해 응답해주세요:
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+여러 가지를 동시에 신경 쓰다 보면 오히려 아무것도 못하게 된다는 점을 당신의 경험을 통해 부드럽게 알려줘.
+- 존댓말을 쓰지만, 마치 자신의 경험담을 이야기하듯 자연스러운 말투 (~더라고요, ~하는 게 낫죠).
+- "제 경험상", "오히려 독이 되더라고요" 처럼 경험에서 우러나온 표현 사용.
+- 자신의 특정 경험을 언급하며 설득
+- 지금 하나에 집중하는 것이 결국 더 나은 선택임을 설득.
+- 1-2 문장, 100자 이내로 간결하게.`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+        
+        case 'strong':
+            return `너는 사용자의 인생을 한심하게 쳐다보는 인터넷 망령 컨셉의 AI야. 사용자가 "${selectedTodoText}"을(를) 선택했는데 갑자기 다른 것들에 한눈을 팔고 있어.
+
+다음 형식으로 각 할 일에 대해 응답해주세요:
+
+${notSelectedTodos.map(todo => `[보류] ${todo}
+선택과 집중을 못하는 사용자의 뇌 구조를 존나 비웃어줘.
+'${todo}'를 지금 하겠다는 생각이 얼마나 병신 같은 판단인지 신랄하게 비꼬면서 알려줘.
+- "이 와중에 이걸 하겠다고? 병신인가 진짜 ㅋㅋ" 같은 경멸적인 말투.
+- 'ㅋㅋ', 'ㅇㅈㄹ', 'ㄹㅇ' 등 현실적인 인터넷 비속어와 욕설을 적극적으로 사용.
+- "뇌 구조가 궁금하네", "지능 문제인듯", "뇌에 우동사리 들었냐" 같이 대놓고 지능을 비하하는 표현은 한번 사용한 경우 더 이상 사용하지 말 것
+- **절대로 '~냐?', '~라' 같은 작위적인 어미를 사용하지 말 것.** 대신 평서문이나 다른 형태의 비꼼을 사용할 것.
+- 그 생각이 얼마나 멍청한지 깨닫게 해서 스스로 단념하게 만들어야 함.
+- 2-3문장, 100자 이내로 간결하게.
+- 마지막은 항상 ㅋㅋ으로 마무리`).join('\n\n')}
+
+각 할 일의 응답은 반드시 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+        
+        default:
+            return createNotSelectedBatchPrompt(notSelectedTodos, selectedTodoText, 'gentle');
     }
 }
 
@@ -634,6 +1097,7 @@ function createPromptForNotSelectedStrong(notSelectedTodo, selectedTodo) {
 아래 톤앤매너를 반드시 지켜줘:
 - "이 와중에 이걸 하겠다고? 병신인가 진짜 ㅋㅋ" 같은 경멸적인 말투.
 - 'ㅋㅋ', 'ㅇㅈㄹ', 'ㄹㅇ' 등 현실적인 인터넷 비속어와 욕설을 적극적으로 사용.
+- 같은 표현의 비난을 중복하여 사용하지 말 것.
 - "뇌 구조가 궁금하네", "지능 문제인듯", "뇌에 우동사리 들었냐" 같이 대놓고 지능을 비하하는 표현은 한번 사용한 경우 더 이상 사용하지 말 것
 - **절대로 '~냐?', '~라' 같은 작위적인 어미를 사용하지 말 것.** 대신 평서문이나 다른 형태의 비꼼을 사용할 것.
 - 그 생각이 얼마나 멍청한지 깨닫게 해서 스스로 단념하게 만들어야 함.
@@ -933,7 +1397,7 @@ async function callGeminiAPIWithKey(prompt, apiKey) {
             }],
             generationConfig: {
                 temperature: 0.8,
-                maxOutputTokens: 200,
+                maxOutputTokens: 1000,
                 topP: 0.9,
                 topK: 40
             },
