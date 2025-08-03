@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎯 오늘 뭐하지? - AI가 결정해줄게!</title>
+    
+    <!-- 메타 태그 -->
+    <meta name="description" content="AI가 할 일을 정하고 설득까지 해주는 웹사이트입니다. 결정 장애 해결사!">
+    <meta name="keywords" content="할일, 투두리스트, AI, 랜덤선택, 생산성, 결정장애, 설득">
+    <meta name="author" content="Yang Gayeon">
+    
+    <!-- 소셜 미디어 메타 태그 -->
+    <meta property="og:title" content="🎯 오늘 뭐하지? - AI가 정하고 설득까지 해줄게!">
+    <meta property="og:description" content="AI가 할 일을 정하고 설득까지 해주는 웹사이트입니다. 결정 장애 해결사!">
+    <meta property="og:type" content="website">
+    <meta property="og:locale" content="ko_KR">
+    
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="🎯 오늘 뭐하지? - AI가 정하고 설득까지 해줄게!">
+    <meta name="twitter:description" content="AI가 할 일을 정하고 설득까지 해주는 웹사이트입니다. 결정 장애 해결사!">
+    
+    <!-- 파비콘 -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎯</text></svg>">
+    
+    <!-- Pretendard 폰트 -->
+    <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+    
+    <!-- 메인 스타일 -->
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1 class="title">🎯 오늘 뭐하지?</h1>
+            <p class="subtitle">AI가 정하고 설득까지 해줄게 !</p>
+        </header>
+
+        <main class="main">
+            <!-- 할 일 입력 섹션 -->
+            <section class="input-section">
+                <h2>할 일 목록을 입력해주세요</h2>
+                <div class="input-form">
+                    <input type="text" id="todoInput" placeholder="할 일을 입력하세요 (예: 운동하기, 청소하기, 책읽기...)" />
+                    <button id="addTodoBtn" class="btn btn-primary">추가</button>
+                </div>
+                
+                <ul id="todoList" class="todo-list">
+                    <!-- 할 일 목록이 여기에 동적으로 추가됩니다 -->
+                </ul>
+                
+                <!-- AI 강도 선택 슬라이더 -->
+                <div class="intensity-section">
+                    <h3>AI 설득 강도</h3>
+                    <div class="intensity-slider-container">
+                        <!-- 상단 라벨들 -->
+                        <div class="intensity-labels">
+                            <span class="intensity-label-item active" data-value="0">🌸 부드럽게</span>
+                            <span class="intensity-label-item" data-value="1">💬 일반적</span>
+                            <span class="intensity-label-item" data-value="2">🔥 강하게</span>
+                        </div>
+                        
+                        <!-- 슬라이더 -->
+                        <div class="intensity-slider-wrapper">
+                            <input type="range" id="intensitySlider" class="intensity-slider" 
+                                   min="0" max="2" step="1" value="0">
+                            <div class="slider-track">
+                                <div class="slider-progress" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- 하단 설명들 -->
+                        <div class="intensity-descriptions">
+                            <span class="intensity-desc-item active" data-value="0">격려하는 톤</span>
+                            <span class="intensity-desc-item" data-value="1">솔직하고 현실적인 조언</span>
+                            <span class="intensity-desc-item" data-value="2">거침없고 직설적인 비난(욕설 주의)</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <button id="randomSelectBtn" class="btn btn-accent" disabled aria-describedby="random-help">
+                    🎲 무작위로 선택하기
+                </button>
+                <p id="random-help" class="sr-only">할 일이 최소 2개 이상 있어야 선택할 수 있습니다</p>
+            </section>
+
+            <!-- 결과 섹션 -->
+            <section id="resultSection" class="result-section hidden">
+                <h2>AI의 판단 결과</h2>
+                <div id="resultCards" class="result-cards">
+                    <!-- AI 결과 카드들이 여기에 표시됩니다 -->
+                </div>
+                
+                <div class="action-buttons">
+                    <button id="tryAgainBtn" class="btn btn-secondary">🔄 다시 선택</button>
+                    <button id="resetBtn" class="btn btn-outline">🏠 처음부터</button>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>✨ AI가 당신의 선택을 도와드려요!</p>
+            <div class="keyboard-shortcuts">
+                <p><strong>키보드 단축키:</strong></p>
+                <p>Enter: 할 일 추가 • Escape: 입력창 지우기 • Ctrl+Enter: 랜덤 선택</p>
+            </div>
+        </footer>
+    </div>
+
+    <!-- 로딩 오버레이 -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>AI가 열심히 생각하고 있어요...</p>
+        </div>
+    </div>
+
+
+
+    <!-- 메인 스크립트 -->
+    <script src="scripts/main.js"></script>
+</body>
+</html>

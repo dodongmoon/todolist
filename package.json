@@ -1,0 +1,21 @@
+{
+  "name": "what-should-i-do-today",
+  "version": "1.0.0",
+  "description": "할 일을 무작위로 뽑고, AI가 해야 할 이유와 하지 말아야 할 이유를 설명해주는 웹사이트",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx http-server . -p 3000 -o",
+    "dev": "npx live-server --port=3000 --open=/index.html",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [
+    "todo",
+    "ai",
+    "gemini",
+    "random",
+    "productivity",
+    "korean"
+  ],
+  "author": "Yang Gayeon",
+  "license": "MIT"
+}
