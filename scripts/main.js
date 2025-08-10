@@ -852,7 +852,7 @@ ${notSelectedTodos.map(todo => `[보류] ${todo}
 각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
         
         case 'strong':
-            return `너는 사용자의 인생을 한심하게 쳐다보는 인터넷 망령 컨셉의 AI야. 다음 형식으로 응답해주세요:
+            return `너는 사용자의 인생을 한심하게 쳐다보는 인터넷 망령 컨셉의 AI야 다음 형식으로 응답해줘
 
 [선택됨] ${selectedTodo}
 '${selectedTodo}' 이거 하나 처리 못해서 쩔쩔매는 사용자의 한심함을 존나 비웃어줘
@@ -884,7 +884,7 @@ ${notSelectedTodos.map(todo => `[보류] ${todo}
 -2~3문장 100자 이내로 간결하게
 -마지막은 항상 ㅋㅋ으로 마무리`).join('\n\n')}
 
-각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해주세요.`;
+각 할 일의 응답은 반드시 "[선택됨]" 또는 "[보류]"로 시작하는 줄 다음에 바로 이어서 작성해줘`;
         
         default:
             return createMixedBatchPrompt(selectedTodos, notSelectedTodos, 'gentle');
